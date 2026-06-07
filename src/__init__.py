@@ -26,6 +26,18 @@ from .inhomogeneous_optimization import (
 
 from .utils import run_all_experiments
 
+from .apic import (
+    run_apic_loop,
+    simulate_forward_batch,
+    integrate_costate,
+    simulate_controlled_backward_pass,
+    downsample_recent_weighted_trajectories,
+    smooth_piecewise_nu,
+    compute_weighted_pheromone_gradient,
+    make_init_fn,
+    compute_sin_ratio,
+)
+
 __version__ = "1.0.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
@@ -48,5 +60,17 @@ __all__ = [
     "snell_optimal_path_length",
     
     # Utilities
-    "run_all_experiments"
+    "run_all_experiments",
+
+    # Algorithm 1 (APIC) - full forward-backward optimization loop
+    "run_apic_loop",
+    "simulate_forward_batch",
+    "integrate_costate",
+    "simulate_controlled_backward_pass",
+    "downsample_recent_weighted_trajectories",
+    "smooth_piecewise_nu",
+    "compute_weighted_pheromone_gradient",
+    "make_init_fn",
+    "compute_sin_ratio",
 ]
+
