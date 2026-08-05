@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import random
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm, ListedColormap
+from matplotlib.patches import Rectangle
 from scipy.optimize import minimize_scalar
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -48,9 +48,14 @@ NUM_CYCLES = 5
 BATCH_SIZE = 32
 NUM_STEPS = 1520
 DT = 0.001
-SIGMA_NOISE = 1.0
 PHER_SIGMA = 0.05
 SEED = 0
+
+# Physical parameters (Eqs. 2, 4, 7); match notebooks/04_algorithm1_snell.ipynb
+BETA = 1.0
+D_THETA = 0.5
+EPS_THETA = 1.0
+GOAL_GAIN = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +118,6 @@ def trajectory_traversal_time(traj, nu_fn):
 
 def run_sweep():
     init_fn = make_init_fn(POINT_A, POINT_B, BATCH_SIZE)
-    forward_params = {"dt": DT, "num_steps": NUM_STEPS, "sigma_noise": SIGMA_NOISE}
-    backward_params = forward_params
 
     representative_trajs = []
     representative_pheromones = []
@@ -131,14 +134,18 @@ def run_sweep():
             init_fn=init_fn,
             point_a=POINT_A,
             point_b=POINT_B,
+            dt=DT,
+            num_steps=NUM_STEPS,
             pher_sigma=PHER_SIGMA,
-            forward_params=forward_params,
-            backward_params=backward_params,
+            beta=BETA,
+            D_theta=D_THETA,
+            eps_theta=EPS_THETA,
+            goal_gain=GOAL_GAIN,
             nu_fn=nu_fn,
         )
 
         last_cycle = np.array(all_forward[-1])  # (T, B, 3)
-        representative_trajs.append(last_cycle[:, 0])  # one agent for the panel
+        representative_trajs.append(last_cycle)  # keep the full batch for plotting
 
         # Store a subsample of pheromone points for visualization only
         pher_np = np.array(pher_pts)
@@ -175,6 +182,7 @@ def pheromone_field_grid(pher_pts, X, Y, sigma=PHER_SIGMA,
     chunk_size * H * W floats ~ 2000*100*100*8 = 160MB transiently.
     """
     pts = np.asarray(pher_pts)
+    pts = pts[~np.isnan(pts).any(axis=1)]  # drop NaN-padding from savez
     if pts.shape[0] > max_points:
         rng = np.random.default_rng(rng_seed)
         idx = rng.choice(pts.shape[0], size=max_points, replace=False)
@@ -190,32 +198,97 @@ def pheromone_field_grid(pher_pts, X, Y, sigma=PHER_SIGMA,
     return field
 
 
-def plot_trajectory_panels(trajs, pheros, control_strengths, out_path):
-    grid = 100
-    x = np.linspace(-0.1, 1.1, grid)
-    y = np.linspace(-0.1, 1.1, grid)
+def plot_trajectory_panels(trajs_all, pheros, control_strengths, out_path):
+    """One panel per steepness value: shaded refractive medium, pheromone
+    field as a light-to-dark purple gradient, all backward trajectories
+    overlaid semi-transparently, and the Snell-optimal path shown for
+    reference in solid orange."""
+    grid = 120
+    x = np.linspace(-0.05, 1.05, grid)
+    y = np.linspace(-0.05, 1.05, grid)
     X, Y = np.meshgrid(x, y)
 
-    fig, axes = plt.subplots(2, 5, figsize=(15, 6))
+    # Snell-optimal refracted path from Fermat's principle
+    x_star, _ = snell_optimal_x(POINT_A, POINT_B, BASE_NU, JUMP_NU)
+    snell_x = np.array([float(POINT_A[0]), x_star, float(POINT_B[0])])
+    snell_y = np.array([float(POINT_A[1]), BOUNDARY_Y, float(POINT_B[1])])
+
+    fig, axes = plt.subplots(2, 5, figsize=(16, 6.8),
+                             sharex=True, sharey=True)
     axes = axes.flatten()
 
-    cmap = ListedColormap(["white"] + plt.get_cmap('YlOrRd')(np.linspace(0.2, 1.0, 256)).tolist())
-    norm = LogNorm(vmin=1e-3, vmax=1.0)
-
-    for i, (traj, pher, cs) in enumerate(zip(trajs, pheros, control_strengths)):
+    for i, (last_cycle, pher, cs) in enumerate(zip(trajs_all, pheros,
+                                                   control_strengths)):
         ax = axes[i]
-        field = pheromone_field_grid(pher, X, Y)
-        ax.contourf(X, Y, field, levels=50, cmap=cmap, norm=norm)
-        ax.plot(traj[:, 0], traj[:, 1], color='black', lw=1.5)
-        ax.scatter([POINT_A[0]], [POINT_A[1]], color='red', s=30, zorder=3)
-        ax.scatter([POINT_B[0]], [POINT_B[1]], color='blue', s=30, zorder=3)
-        ax.axhline(BOUNDARY_Y, color='gray', linestyle='--', lw=1)
-        ax.set_title(rf"$\ell_0 |\nabla \log \nu| = {cs:.2f}$", fontsize=10)
-        ax.set_xlim(-0.1, 1.1); ax.set_ylim(-0.1, 1.1)
-        ax.set_xticks([]); ax.set_yticks([])
 
-    fig.suptitle("Trajectories and pheromone fields vs.\\ heterogeneity scale", fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.94])
+        # Slow medium (nu = 10) as light gray band above y = 0.5
+        ax.add_patch(Rectangle((-0.1, BOUNDARY_Y), 1.3, 1.3 - BOUNDARY_Y,
+                               facecolor='#e9e9ef', edgecolor='none',
+                               zorder=0))
+
+        # Pheromone KDE, normalized per panel so we see the gradient
+        field = pheromone_field_grid(pher, X, Y)
+        vmax = float(np.percentile(field, 99)) or 1.0
+        ax.imshow(field, origin='lower',
+                  extent=[x.min(), x.max(), y.min(), y.max()],
+                  cmap='Purples', vmin=0, vmax=vmax,
+                  alpha=0.75, aspect='auto', zorder=1)
+
+        # All backward trajectories from the last cycle (batch)
+        T, B, _ = last_cycle.shape
+        for b in range(B):
+            ax.plot(last_cycle[:, b, 0], last_cycle[:, b, 1],
+                    color='#222', lw=0.4, alpha=0.35, zorder=2)
+
+        # Snell-optimal refracted path (Fermat)
+        ax.plot(snell_x, snell_y, color='#e07a1f', lw=1.8, ls='--',
+                dash_capstyle='round',
+                label='Snell optimum' if i == 0 else None, zorder=3)
+
+        # Refractive interface (on top)
+        ax.axhline(BOUNDARY_Y, color='k', lw=0.8, zorder=4)
+
+        # Source (A) and target (B) markers
+        ax.plot(*POINT_A, marker='o', mec='k', mfc='#1f77b4', ms=6,
+                zorder=5)
+        ax.plot(*POINT_B, marker='o', mec='k', mfc='#2ca02c', ms=6,
+                zorder=5)
+
+        ax.set_title(rf"$\ell_0 |\nabla \log \nu|_{{\rm interface}} = {cs:.1f}$",
+                     fontsize=10)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_xticks([0.0, 0.5, 1.0])
+        ax.set_yticks([0.0, 0.5, 1.0])
+        ax.tick_params(labelsize=8)
+        if i % 5 == 0:
+            ax.set_ylabel(r'$y$', fontsize=9)
+        if i >= 5:
+            ax.set_xlabel(r'$x$', fontsize=9)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.6)
+
+    # Legend proxies (created once)
+    legend_handles = [
+        plt.Line2D([0], [0], color='#e07a1f', lw=1.8, ls='--',
+                   label='Snell-optimal path (Fermat)'),
+        plt.Line2D([0], [0], color='#222', lw=1.2, alpha=0.6,
+                   label='backward trajectories'),
+        plt.Rectangle((0, 0), 1, 1, facecolor='#e9e9ef', edgecolor='none',
+                      label=r'slow medium $\nu=10$ ($y>0.5$)'),
+        plt.Rectangle((0, 0), 1, 1, facecolor='#8c6bb1', alpha=0.7,
+                      label=r'converged pheromone $\phi$'),
+    ]
+    fig.legend(handles=legend_handles, loc='lower center',
+               ncol=4, frameon=False, fontsize=9,
+               bbox_to_anchor=(0.5, -0.01))
+
+    fig.suptitle(
+        r"Pheromone bundles sharpen around the Snell-optimal path "
+        r"as the refractive interface steepens",
+        fontsize=12, y=0.995,
+    )
+    fig.tight_layout(rect=[0, 0.04, 1, 0.97])
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"  wrote {out_path}")
@@ -223,13 +296,18 @@ def plot_trajectory_panels(trajs, pheros, control_strengths, out_path):
 
 def plot_crossing_vs_steepness(control_strengths, x_crossings, out_path):
     x_opt, _ = snell_optimal_x(POINT_A, POINT_B, BASE_NU, JUMP_NU)
-    fig, ax = plt.subplots(figsize=(5.5, 4))
-    ax.plot(control_strengths, x_crossings, 'o-', color='black', label='APIC trajectory')
-    ax.axhline(x_opt, color='C3', ls='--', label=f"Snell optimum $x={x_opt:.3f}$")
-    ax.set_xlabel(r'$\ell_0 |\nabla \log \nu|$ (control strength)')
-    ax.set_ylabel(r'$x$ at interface crossing ($y=0.5$)')
-    ax.legend()
-    ax.grid(True, ls='--', lw=0.5)
+    fig, ax = plt.subplots(figsize=(5.5, 3.6))
+    ax.axhline(x_opt, color='#e07a1f', ls='--', lw=1.6,
+               label=fr'Snell optimum  $x^*={x_opt:.3f}$')
+    ax.plot(control_strengths, x_crossings, 'o-', color='#3b3b6f',
+            lw=1.6, mfc='white', mec='#3b3b6f', mew=1.2,
+            label='mean APIC crossing (batch of 32)')
+    ax.set_xlabel(r'interface sharpness  $\ell_0 |\nabla \log \nu|$')
+    ax.set_ylabel(r'mean crossing $x$ at $y=0.5$')
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(True, ls=':', lw=0.5, alpha=0.6)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -239,13 +317,18 @@ def plot_crossing_vs_steepness(control_strengths, x_crossings, out_path):
 def plot_traversal_time_vs_steepness(control_strengths, traversal_times, out_path):
     _, T_opt = snell_optimal_x(POINT_A, POINT_B, BASE_NU, JUMP_NU)
     ratios = np.array(traversal_times) / T_opt
-    fig, ax = plt.subplots(figsize=(5.5, 4))
-    ax.plot(control_strengths, ratios, 'o-', color='black')
-    ax.axhline(1.0, color='C3', ls='--', label=r'Snell optimum')
-    ax.set_xlabel(r'$\ell_0 |\nabla \log \nu|$ (control strength)')
+    fig, ax = plt.subplots(figsize=(5.5, 3.6))
+    ax.axhline(1.0, color='#e07a1f', ls='--', lw=1.6,
+               label=r'Snell optimum  $\langle T \rangle / T^* = 1$')
+    ax.plot(control_strengths, ratios, 'o-', color='#3b3b6f',
+            lw=1.6, mfc='white', mec='#3b3b6f', mew=1.2,
+            label='mean APIC traversal time (batch of 32)')
+    ax.set_xlabel(r'interface sharpness  $\ell_0 |\nabla \log \nu|$')
     ax.set_ylabel(r'$\langle T \rangle / T^*$')
-    ax.legend()
-    ax.grid(True, ls='--', lw=0.5)
+    ax.legend(frameon=False, fontsize=9)
+    ax.grid(True, ls=':', lw=0.5, alpha=0.6)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.6)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -275,15 +358,22 @@ def main():
         os.path.join(OUT_DIR, 'traversal_time_vs_steepness.pdf'),
     )
 
-    # Save raw data alongside
+    # Save all raw data so replotting is decoupled from running.
+    save_path = os.path.join(OUT_DIR, 'steepness_sweep_data.npz')
     np.savez(
-        os.path.join(OUT_DIR, 'steepness_sweep_data.npz'),
+        save_path,
         steepness=STEEP_VALS,
         control_strengths=np.array(control_strengths),
         x_crossings=np.array(x_crossings),
         traversal_times=np.array(traversal_times),
+        trajs=np.stack([np.asarray(t) for t in trajs], axis=0),  # (S, T, B, 3)
+        pheros=np.stack(
+            [np.pad(p, ((0, max(0, 20000 - p.shape[0])), (0, 0)),
+                    constant_values=np.nan)[:20000] for p in pheros],
+            axis=0,
+        ),  # (S, 20000, 2), NaN-padded so all panels have equal length
     )
-    print(f"  wrote {os.path.join(OUT_DIR, 'steepness_sweep_data.npz')}")
+    print(f"  wrote {save_path}")
 
 
 if __name__ == '__main__':

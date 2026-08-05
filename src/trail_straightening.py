@@ -194,3 +194,4 @@ def plot_trail_straightening_results(results, save_path=None):
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     plt.show()
+

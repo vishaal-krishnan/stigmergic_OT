@@ -149,3 +149,4 @@ def plot_trail_following_results(trail, trajectory, point_a, point_b, save_path=
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     plt.show()
+

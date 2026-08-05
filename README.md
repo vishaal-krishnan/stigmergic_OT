@@ -1,172 +1,163 @@
 # Stigmergic Optimal Transport
 
-**Computational framework for studying collective path optimization through stigmergic feedback in inhomogeneous media.**
+Code accompanying the paper *Stigmergic optimal transport* (PRL, revised submission).
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+The centerpiece is **Algorithm 1 (APIC)** in `src/apic.py` -- the iterative
+forward-backward optimization loop used for every Snell-Descartes result in
+the paper. Two notebooks and one animated video walk through the loop's
+structure step by step so reviewers can inspect the correspondence between
+paper equations and code directly.
 
-## Overview
+## Where to look first
 
-This repository contains implementations for three fundamental problems in stigmergic optimal transport:
+| You want to... | Open |
+|---|---|
+| See Algorithm 1 in code | `src/apic.py` -- one file, four stages, cross-referenced to Eqs. 2, 4, 6, 7 |
+| Reproduce Fig. 4 (Snell-Descartes) | `notebooks/04_algorithm1_snell.ipynb` |
+| Verify the forward-backward structure explicitly | `notebooks/05_forward_backward_demo.ipynb` (numerical assertions) |
+| **See the loop converge visually over 5 stigmergic cycles** | `figures/demo/multicycle_convergence.mp4` |
+| **See the notebook and physics side-by-side** | `figures/demo/05_notebook_plus_multicycle.mp4` |
+| Reproduce the SI steepness sweep | `scripts/steepness_sweep.py` |
 
-1. **Trail Following** - How agents follow existing pheromone trails
-2. **Trail Straightening** - How collective behavior leads to path optimization  
-3. **Inhomogeneous Media Optimization** - How agents optimize paths through refractive environments
-
-## Repository Structure
+## Repository layout
 
 ```
 stigmergic_OT/
-├── README.md              # This file
-├── requirements.txt       # Python dependencies
-├── LICENSE               # MIT License
-│
-├── src/                  # Core implementations
-│   ├── __init__.py
-│   ├── trail_following.py
-│   ├── trail_straightening.py
-│   ├── inhomogeneous_optimization.py
+├── src/
+│   ├── apic.py                          # Algorithm 1 (canonical) - the paper's forward-backward loop
+│   ├── trail_following.py               # Fig. 2 supporting code
+│   ├── trail_straightening.py           # supporting code for straightening results
+│   ├── inhomogeneous_optimization.py    # supporting code for inhomogeneous-media results
 │   └── utils.py
 │
-└── notebooks/            # Interactive demonstrations
-    ├── 01_trail_following.ipynb
-    ├── 02_trail_straightening.ipynb
-    └── 03_inhomogeneous_optimization.ipynb
+├── notebooks/
+│   ├── 04_algorithm1_snell.ipynb        # Snell-Descartes experiment (Fig. 4)
+│   ├── 05_forward_backward_demo.ipynb   # per-stage assertions; Gamma, mu terminal conditions
+│   ├── 01_trail_following.ipynb         # earlier trail-following demo
+│   ├── 02_trail_straightening.ipynb     # earlier trail-straightening demo
+│   ├── 03_inhomogeneous_optimization.ipynb
+│   └── legacy/                          # pre-revision notebooks; kept for provenance
+│
+├── scripts/
+│   ├── steepness_sweep.py                    # SI: sweep over refractive-index sharpness
+│   ├── animate_passes.py                     # forward/adjoint/backward animation (1 cycle)
+│   ├── animate_multicycle.py                 # NEW: N-cycle convergence animation
+│   ├── make_combined_multicycle_video.py     # NEW: notebook + multicycle animation side-by-side
+│   ├── make_notebook_run_video.py            # notebook-run video (cell-by-cell)
+│   ├── make_combined_demo_video.py           # notebook + 1-cycle animation
+│   └── make_demo_video.py                    # notebook code walkthrough
+│
+├── figures/
+│   ├── demo/                            # generated demo assets (video + panels)
+│   └── ...                              # paper figures
+│
+├── requirements.txt
+└── README.md
 ```
 
-## Installation
+## Algorithm 1 in one page
+
+`src/apic.py` has one entry point, `run_apic_loop`, that runs a sequence of
+stigmergic cycles. Each cycle has four stages:
+
+| Stage | Function | Paper reference |
+|---|---|---|
+| 1. Forward pass (source -> target) | `simulate_forward_batch` | Eqs. 2, 4 |
+| 2. Adjoint sweep (backward in arc length) | `integrate_costate` | Eq. 6; terminal conditions Gamma(1)=0, mu(1)=-grad Psi |
+| 3. Controlled return (target -> source) | `simulate_controlled_backward_pass` | Eq. 7; feedback omega_ctrl(s) = -Gamma(s)/gamma, gamma = beta * D_theta |
+| 4. Pheromone deposition | `downsample_recent_weighted_trajectories` | -- |
+
+The correspondence between paper symbols and code variables is documented in
+the module-level docstring at the top of `src/apic.py`.
+
+## Reproducing the paper's results
+
+### 1. Set up the environment
 
 ```bash
-git clone https://github.com/yourusername/stigmergic-optimal-transport.git
-cd stigmergic-optimal-transport
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Requirements
-
-- JAX >= 0.4.0 (for high-performance computing)
-- NumPy >= 1.21.0
-- Matplotlib >= 3.5.0
-- SciPy >= 1.8.0
-- Jupyter >= 1.0.0
-
-## Quick Start
-
-### Using Python Scripts
-
-```python
-from src import run_all_experiments
-
-# Run all three experiments
-results = run_all_experiments()
-
-# Access individual results
-trail_following = results['trail_following']
-straightening = results['trail_straightening']
-optimization = results['inhomogeneous_optimization']
-```
-
-### Using Jupyter Notebooks
-
-For interactive exploration with visualizations:
+### 2. Run the Snell-Descartes experiment (Fig. 4)
 
 ```bash
-jupyter notebook notebooks/
+jupyter nbconvert --to notebook --execute \
+  notebooks/04_algorithm1_snell.ipynb --inplace \
+  --ExecutePreprocessor.timeout=-1
 ```
 
-Then open:
-- `01_trail_following.ipynb` - Agent navigation along pheromone trails
-- `02_trail_straightening.ipynb` - Collective path optimization
-- `03_inhomogeneous_optimization.ipynb` - Refractive path finding
+Open the notebook to inspect the output cells (converged trajectories,
+Snell ratio, per-cycle bundles).
 
-## Problem Descriptions
+### 3. Verify the forward-backward structure
 
-### 1. Trail Following
-
-**Question:** Given an existing pheromone trail, how do agents follow it?
-
-**Method:** Agents sense pheromone gradients and adjust heading perpendicular to their current direction.
-
-**Key Equation:**
-```
-dθ/dt = β ∇φ · n̂ + √(2Dθ) η(t)
+```bash
+jupyter nbconvert --to notebook --execute \
+  notebooks/05_forward_backward_demo.ipynb --inplace \
+  --ExecutePreprocessor.timeout=-1
 ```
 
-### 2. Trail Straightening
+This notebook exercises each of the four stages independently and asserts:
 
-**Question:** How do multiple agents collectively make paths more direct?
+* the forward pass integrates A -> B (checked on endpoints);
+* Gamma(1) = 0 and mu(1) = 0 exactly (terminal conditions of the adjoint sweep);
+* the interior costate is non-trivial (the sweep did something);
+* the controlled backward pass integrates B -> A (checked on endpoints);
+* stage 3 provably depends on stage 2 -- a counterfactual with the costate
+  set to zero produces different backward trajectories.
 
-**Method:** Iterative process where agents follow trails, average their paths, and the result becomes the new trail.
+For a visual version see `figures/demo/forward_backward_animated.mp4`
+(one cycle, generated by `scripts/animate_passes.py`).
 
-**Key Insight:** Collective averaging naturally reduces curvature fluctuations.
+### 3b. Reproduce the multi-cycle convergence video
 
-### 3. Inhomogeneous Media Optimization
+To see the loop iterate over five stigmergic cycles until the trajectory
+bundle tightens around the Snell-optimal path:
 
-**Question:** How do agents find optimal paths through media with varying refractive indices?
-
-**Method:** Agents respond to both pheromone gradients and refractive index gradients, discovering paths that minimize optical length.
-
-**Key Result:** Emergent behavior satisfies Snell's law at interfaces.
-
-## Theory Background
-
-This work combines concepts from:
-
-- **Optimal Transport Theory** - Mathematical framework for minimizing transport costs
-- **Stigmergy** - Indirect coordination through environmental modification
-- **Calculus of Variations** - Finding paths that minimize functionals
-- **Statistical Physics** - Stochastic processes with noise and drift
-
-### Physical Interpretation
-
-The stigmergic approach provides a **physically realizable** mechanism for solving optimal transport problems, unlike abstract optimization algorithms. Agents use only:
-- Local gradient information
-- Noisy sensing
-- Simple movement rules
-
-Yet they collectively solve global optimization problems!
-
-## Usage Examples
-
-### Trail Following
-
-```python
-from src.trail_following import (
-    run_trail_following_experiment,
-    create_squiggly_line,
-    simulate_trail_following
-)
-import jax.numpy as jnp
-
-# Create a test trail
-point_a = jnp.array([0.0, 0.0])
-point_b = jnp.array([0.5, 1.0])
-trail = create_squiggly_line(point_a, point_b)
-
-# Simulate agent following it
-trail, trajectory, quality = run_trail_following_experiment()
-print(f"Trail following quality: {quality:.4f}")
+```bash
+python scripts/animate_multicycle.py 5 figures/demo/multicycle_convergence.mp4
 ```
 
-### Trail Straightening
+To also see the notebook and the physics side-by-side:
 
-```python
-from src.trail_straightening import run_trail_straightening_experiment
-
-results = run_trail_straightening_experiment()
-print(f"Initial efficiency: {results['initial_efficiency']:.4f}")
-print(f"Final efficiency: {results['final_efficiency']:.4f}")
+```bash
+python scripts/make_combined_multicycle_video.py 5
 ```
 
-### Inhomogeneous Optimization
+Both videos are shipped under `figures/demo/` so reviewers can watch
+without running any code.
 
-```python
-from src.inhomogeneous_optimization import run_inhomogeneous_optimization_experiment
+### 4. Reproduce the SI steepness sweep
 
-results = run_inhomogeneous_optimization_experiment()
-print(f"Efficiency vs Snell's law: {results['efficiency']:.2%}")
+```bash
+python scripts/steepness_sweep.py
 ```
+
+Writes three PDFs into `figures/`.
+
+## Dependencies
+
+Pinned in `requirements.txt`:
+
+* jax, jaxlib (>= 0.4)
+* numpy, scipy, matplotlib
+* jupyter, ipykernel
+* tqdm
+* plotly (for a small subset of interactive figures)
+
+## Notation (code <-> paper)
+
+| Paper | Code |
+|---|---|
+| X-tilde, Y-tilde, Theta-tilde | `x`, `y`, `theta` (tilde dropped in code) |
+| arc length s in [0, 1] | integer step index `t` in `range(num_steps)` |
+| refractive index nu(x, y) | `nu_fn`, default `smooth_piecewise_nu` |
+| pheromone field phi | Gaussian KDE over `pher_points`, `pher_weights` |
+| costate (mu, Gamma) | `lambda_traj[:, :, :2]` and `lambda_traj[:, :, 2]` |
+| control gain gamma = beta * D_theta | see the note in `apic.py` |
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See `LICENSE`.
